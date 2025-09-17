@@ -4,7 +4,7 @@ from calculate_index_api import router as calculate_router
 from timeseries_vegetation_api import router as veg_router
 from timeseries_water_api import router as water_router
 
-app = FastAPI(title="CropGen API (root modules)")
+app = FastAPI(root_path="/v4")
 
 # Mount routers at the same paths as before
 app.include_router(availability_router, prefix="/api/availability")
