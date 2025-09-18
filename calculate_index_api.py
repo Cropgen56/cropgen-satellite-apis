@@ -4,6 +4,8 @@ import utils
 import numpy as np
 import time
 from datetime import datetime, timedelta
+import io
+import base64
 
 # rasterio + helpers (needed here because we call rasterio.open, Resampling, etc.)
 import rasterio
@@ -14,6 +16,8 @@ from shapely.geometry import mapping
 
 # concurrency helpers used in this module
 from concurrent.futures import ThreadPoolExecutor, as_completed
+
+from PIL import Image
 
 router = APIRouter()
 
@@ -38,6 +42,17 @@ def calculate_index(req: CalculateRequest):
     prefer_pc = True
     if req.provider and req.provider.lower() == "aws":
         prefer_pc = False
+
+    # ❌ Sentinel-1 cannot compute optical indices like NDVI, EVI, etc.
+    OPTICAL_INDICES = {
+        "NDVI","EVI","EVI2","SAVI","MSAVI","NDMI","NDWI","SMI",
+        "CCC","NITROGEN","SOC","NDRE","RECI","TRUE_COLOR"
+    }
+    if satellite.startswith("s1") and index_name in OPTICAL_INDICES:
+        raise HTTPException(
+            status_code=400,
+            detail=f"Index {index_name} is not available for Sentinel-1 (radar). Use Sentinel-2 (s2) for optical indices."
+        )
 
     index_band_map = {
         'NDVI': ['B04','B08'],
@@ -113,9 +128,11 @@ def calculate_index(req: CalculateRequest):
                         S_stack[take] = S[take]
                     have_data |= take
 
+        # default NDVI arr (used if index is NDVI)
         den = (N_stack + R_stack); den[den == 0] = np.nan
         index_arr = (N_stack - R_stack) / den
 
+        # ensure band_dict contains all requested bands
         band_dict = {"B04": R_stack, "B08": N_stack}
         for key in index_band_map[index_name]:
             if key not in band_dict:
@@ -135,6 +152,7 @@ def calculate_index(req: CalculateRequest):
                 else:
                     band_dict[key] = None
 
+        # coverage check
         total_pixels = H * W
         valid_pixels = np.count_nonzero(np.isfinite(index_arr) & aoi_mask)
         valid_frac = valid_pixels / float(max(np.count_nonzero(aoi_mask), 1))
@@ -173,6 +191,7 @@ def calculate_index(req: CalculateRequest):
             except Exception:
                 pass
 
+        # compute index if not NDVI or TRUE_COLOR
         if index_name != "NDVI" and index_name != "TRUE_COLOR":
             try:
                 index_arr = utils.compute_index_array_by_name(index_name, band_dict)
@@ -185,6 +204,63 @@ def calculate_index(req: CalculateRequest):
 
         index_arr[~aoi_mask] = np.nan
 
+        # ---- TRUE_COLOR special rendering ----
+        if index_name == "TRUE_COLOR":
+            R = band_dict.get("B04")
+            G = band_dict.get("B03")
+            B = band_dict.get("B02")
+            if R is None or G is None or B is None:
+                raise HTTPException(status_code=424, detail="True color requires B04,B03,B02 bands")
+
+            valid_mask = np.isfinite(R) & np.isfinite(G) & np.isfinite(B) & aoi_mask
+            if S_stack is not None:
+                bad = np.isin(S_stack, [3,8,9,10,11])
+                valid_mask = valid_mask & (~bad)
+
+            if not np.any(valid_mask):
+                raise HTTPException(status_code=424, detail="No valid pixels for TRUE_COLOR after masking")
+
+            if np.nanmax(R) > 1.5 or np.nanmax(G) > 1.5 or np.nanmax(B) > 1.5:
+                Rf = np.where(np.isfinite(R), R * (1/10000.0), 0.0)
+                Gf = np.where(np.isfinite(G), G * (1/10000.0), 0.0)
+                Bf = np.where(np.isfinite(B), B * (1/10000.0), 0.0)
+            else:
+                Rf = np.where(np.isfinite(R), R, 0.0)
+                Gf = np.where(np.isfinite(G), G, 0.0)
+                Bf = np.where(np.isfinite(B), B, 0.0)
+
+            def stretch_channel(ch):
+                vals = ch[valid_mask]
+                if vals.size == 0: return ch
+                lo = np.nanpercentile(vals, 2)
+                hi = np.nanpercentile(vals, 98)
+                if hi <= lo: return np.clip((ch - lo), 0.0, 1.0)
+                out = (ch - lo) / (hi - lo)
+                return np.clip(out, 0.0, 1.0)
+
+            Rn, Gn, Bn = map(stretch_channel, [Rf, Gf, Bf])
+            rgb = np.stack([Rn, Gn, Bn], axis=-1)
+            rgb_uint8 = (rgb * 255.0).astype("uint8")
+
+            rgba = np.ones((H, W, 3), dtype=np.uint8) * 255
+            rgba[valid_mask] = rgb_uint8[valid_mask]
+            pil = Image.fromarray(rgba, mode="RGB")
+            pil = pil.resize((width, height), resample=Image.NEAREST)
+            buf = io.BytesIO()
+            pil.save(buf, format="PNG", optimize=True)
+            img_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
+
+            bounds = utils.compute_bounds_wgs84(dst_transform, W, H, target_crs)
+            merged_legend = [{"color": "#000000", "label": "True Color", "hectares": 0.0, "percent": 0.0}]
+            return {
+                "date": date_str,
+                "index_name": index_name,
+                "image_base64": img_b64,
+                "bounds": bounds,
+                "legend": merged_legend
+            }
+        # ---- END TRUE_COLOR ----
+
         validvals = index_arr[np.isfinite(index_arr) & aoi_mask]
         if validvals.size == 0:
             raise HTTPException(status_code=424, detail="Index has no valid pixels after masking")
@@ -192,16 +268,18 @@ def calculate_index(req: CalculateRequest):
         bins_full = utils.ndvi_to_bins(index_arr)
         NDVI_canvas = index_arr
 
-        palette, labels = utils.PALETTE_MAP.get(index_name, (utils.PALETTE, utils.LABELS))
+        if index_name in utils.index_palettes_labels:
+            palette = utils.index_palettes_labels[index_name]['palette']
+            labels = utils.index_palettes_labels[index_name]['labels']
+        else:
+            palette, labels = utils.PALETTE_MAP.get(index_name, (utils.PALETTE, utils.LABELS))
 
-        # nodata_transparent=False -> shows white for nodata/cloud so user can see extent
         img_b64 = utils.render_spread_png_fast(
             bins_full, NDVI_canvas, res_m,
             supersample, smooth, gaussian_sigma,
             width, height, palette=palette, labels=labels, nodata_transparent=False
         )
 
-        # build legend (colors + labels)
         legend = []
         for i in range(min(len(palette), len(labels))):
             legend.append({"color": palette[i], "label": labels[i]})
@@ -210,7 +288,6 @@ def calculate_index(req: CalculateRequest):
 
         bounds = utils.compute_bounds_wgs84(dst_transform, W, H, target_crs)
 
-        # compute area stats per legend bin
         pix_area_m2 = res_m * res_m
         area_stats = []
         aoi_pixel_count = int(np.count_nonzero(aoi_mask))
@@ -225,7 +302,6 @@ def calculate_index(req: CalculateRequest):
             pct = (cnt / float(max(aoi_pixel_count, 1))) * 100.0
             area_stats.append({"label": label, "hectares": round(float(ha), 4), "percent": round(float(pct), 2)})
 
-        # merge legend + area_stats into final "legend" list where each item has color,label,hectares,percent
         area_map = {a["label"]: a for a in area_stats}
         merged_legend = []
         for entry in legend:

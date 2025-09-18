@@ -6,7 +6,7 @@ import numpy as np
 import traceback
 from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# helpers from your utils (must exist in utils.py)
+# helpers from utils.py
 from utils import (
     prefer_http_from_asset,
     sign_href_if_pc,
@@ -23,7 +23,8 @@ from rasterio.enums import Resampling
 
 router = APIRouter()
 
-SUPPORTED = ["NDVI", "EVI", "SAVI", "NDMI", "NDWI", "SUCROSE"]
+# ✅ Only keep the required vegetation indices
+SUPPORTED = ["NDVI", "EVI", "SAVI", "SUCROSE"]
 MAX_THREADS = min(4, THREADS or 4)
 
 class TSRequest(BaseModel):
@@ -32,7 +33,8 @@ class TSRequest(BaseModel):
     end_date: str
     index: str
     provider: Optional[str] = "both"
-    max_items: Optional[int] = 8   # reduced default for speed
+    satellite: Optional[str] = "s2"
+    max_items: Optional[int] = 8
 
 class TimePoint(BaseModel):
     date: str
@@ -57,10 +59,6 @@ def classify_vegetation(index: str, v: Optional[float]) -> str:
         if v < 0.4: return "Moderate"
         if v < 0.6: return "Good"
         return "Very Good"
-    if index in ("NDMI", "NDWI"):
-        if v < 0.1: return "Dry"
-        if v < 0.4: return "Moist"
-        return "Wet"
     if index == "SUCROSE":
         if v < 0.2: return "Immature"
         if v < 0.4: return "Early Maturity"
@@ -69,7 +67,6 @@ def classify_vegetation(index: str, v: Optional[float]) -> str:
     return "Unknown"
 
 def _signed_asset_map(item):
-    """Return dict of lower-case asset key -> signed url (or None)"""
     assets = getattr(item, "assets", {}) or {}
     signed = {}
     for k, a in assets.items():
@@ -87,7 +84,6 @@ def _item_has_required_assets(item, required_bands):
 def _read_bands_from_signed(signed_assets, needed, geom, out_h=16, out_w=16):
     band_arrays = {}
     for b in needed:
-        # asset keys may be 'b04' or 'B04' -> check both
         url = signed_assets.get(b.lower()) or signed_assets.get(b)
         if not url:
             band_arrays[b] = None
@@ -95,8 +91,14 @@ def _read_bands_from_signed(signed_assets, needed, geom, out_h=16, out_w=16):
         try:
             with rasterio.Env():
                 with rasterio.open(url) as ds:
-                    # use read_band_window helper if available (same signature as original)
-                    arr = read_band_window(ds, aoi_to_scene(geom, ds.crs.to_string()), out_h, out_w, ds.transform, Resampling.bilinear)
+                    arr = read_band_window(
+                        ds,
+                        aoi_to_scene(geom, ds.crs.to_string()),
+                        out_h,
+                        out_w,
+                        ds.transform,
+                        Resampling.bilinear
+                    )
                     if np.nanmax(arr) > 1.5:
                         arr = arr * (1/10000.0)
                     band_arrays[b] = arr
@@ -105,11 +107,7 @@ def _read_bands_from_signed(signed_assets, needed, geom, out_h=16, out_w=16):
     return band_arrays
 
 def _compute_index_for_item(item, geom, idx, out_h=16, out_w=16):
-    """
-    Returns tuple (date_str, mean_value) or None if cannot compute.
-    """
     try:
-        # quick cloud check
         cloud = item.properties.get("eo:cloud_cover") or item.properties.get("cloud_cover")
         if cloud is not None:
             try:
@@ -118,23 +116,18 @@ def _compute_index_for_item(item, geom, idx, out_h=16, out_w=16):
             except Exception:
                 pass
 
-        # determine required bands
+        # ✅ Only needed bands for the 4 indices
         if idx == "NDVI":
             needed = ["B08","B04"]
         elif idx == "EVI":
             needed = ["B08","B04","B02"]
         elif idx == "SAVI":
             needed = ["B08","B04"]
-        elif idx == "NDMI":
-            needed = ["B08","B11"]
-        elif idx == "NDWI":
-            needed = ["B03","B11"]
         elif idx == "SUCROSE":
             needed = ["B11","B04"]
         else:
-            needed = []
+            return None
 
-        # fast skip if required assets missing
         reqset = set(b.lower() for b in needed)
         if not _item_has_required_assets(item, reqset):
             return None
@@ -146,24 +139,28 @@ def _compute_index_for_item(item, geom, idx, out_h=16, out_w=16):
 
         band_dict = {k: bands.get(k) for k in bands}
 
-        # prefer using compute_index_array_by_name if available
         try:
             arr = compute_index_array_by_name(idx, band_dict)
         except Exception:
-            # fallback for NDVI
             eps = 1e-6
             if idx == "NDVI":
                 arr = (band_dict["B08"] - band_dict["B04"]) / (band_dict["B08"] + band_dict["B04"] + eps)
-            elif idx == "NDMI":
-                arr = (band_dict["B08"] - band_dict["B11"]) / (band_dict["B08"] + band_dict["B11"] + 1e-6)
+            elif idx == "EVI":
+                NIR, RED, BLUE = band_dict["B08"], band_dict["B04"], band_dict["B02"]
+                arr = 2.5 * (NIR - RED) / (NIR + 6*RED - 7.5*BLUE + 1.0 + eps)
+            elif idx == "SAVI":
+                NIR, RED = band_dict["B08"], band_dict["B04"]
+                L = 0.5
+                arr = ((NIR - RED) / (NIR + RED + L + eps)) * (1.0 + L)
+            elif idx == "SUCROSE":
+                arr = (band_dict["B11"] - band_dict["B04"]) / (band_dict["B11"] + band_dict["B04"] + eps)
             else:
                 return None
 
         mask = np.isfinite(arr)
         if not np.any(mask):
             return None
-        mean_val = float(np.nanmean(arr[mask]))
-        mean_val = round(mean_val, 3)
+        mean_val = round(float(np.nanmean(arr[mask])), 3)
         date = str(item.properties.get("datetime") or item.properties.get("acquired") or "")[:10]
         return (date, mean_val)
     except Exception:
@@ -175,6 +172,13 @@ def vegetation_timeseries(req: TSRequest):
     if idx not in SUPPORTED:
         raise HTTPException(status_code=400, detail=f"Unsupported index. Supported: {SUPPORTED}")
 
+    satellite = (req.satellite or "s2").lower()
+    if satellite.startswith("s1"):
+        raise HTTPException(
+            status_code=400,
+            detail=f"Index {idx} requires Sentinel-2 (optical). Sentinel-1 is radar-only."
+        )
+
     prefer_pc = True
     if req.provider and req.provider.lower() == "aws":
         prefer_pc = False
@@ -182,40 +186,63 @@ def vegetation_timeseries(req: TSRequest):
     try:
         collections = ["sentinel-2-l2a"]
         dt = f"{req.start_date}/{req.end_date}"
+        search_limit = min(max(64, (req.max_items or 8) * 8), 500)
+
         items = []
         if prefer_pc:
-            items = search_planetary(collections, req.geometry, dt, limit=req.max_items)
+            items = search_planetary(collections, req.geometry, dt, limit=search_limit)
             if not items:
-                items = search_aws(collections, req.geometry, dt, limit=req.max_items)
+                items = search_aws(collections, req.geometry, dt, limit=search_limit)
         else:
-            items = search_aws(collections, req.geometry, dt, limit=req.max_items)
+            items = search_aws(collections, req.geometry, dt, limit=search_limit)
             if not items:
-                items = search_planetary(collections, req.geometry, dt, limit=req.max_items)
+                items = search_planetary(collections, req.geometry, dt, limit=search_limit)
 
         if not items:
             return {"index": idx, "summary": {"min": None, "mean": None, "max": None}, "timeseries": []}
 
         results = []
-        # parallelize reading / computing limited by MAX_THREADS
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as ex:
-            futures = {ex.submit(_compute_index_for_item, it, req.geometry, idx, 16, 16): it for it in items[: req.max_items]}
+            futures = {ex.submit(_compute_index_for_item, it, req.geometry, idx, 16, 16): it for it in items}
             for fut in as_completed(futures):
-                res = fut.result()
+                try:
+                    res = fut.result()
+                except Exception:
+                    res = None
                 if res:
                     results.append(res)
 
         if not results:
             return {"index": idx, "summary": {"min": None, "mean": None, "max": None}, "timeseries": []}
 
-        # sort by date
-        results_sorted = sorted(results, key=lambda x: x[0])
+        date_map: Dict[str, List[float]] = {}
+        for date_str, val in results:
+            if not date_str:
+                continue
+            date_map.setdefault(date_str, []).append(val)
+
+        aggregated = [(d, round(float(sum(vals) / len(vals)), 3)) for d, vals in date_map.items()]
+        aggregated_sorted = sorted(aggregated, key=lambda x: x[0])
+
+        max_pts = req.max_items or len(aggregated_sorted)
+        if max_pts < 1:
+            max_pts = len(aggregated_sorted)
+        if len(aggregated_sorted) > max_pts:
+            n = max_pts
+            idxs = [int(round(i * (len(aggregated_sorted) - 1) / float(max(n - 1, 1)))) for i in range(n)]
+            aggregated_sorted = [aggregated_sorted[i] for i in idxs]
+
         times = []
         vals = []
-        for d, v in results_sorted:
+        for d, v in aggregated_sorted:
             times.append({"date": d, "value": v, "status": classify_vegetation(idx, v)})
             vals.append(v)
 
-        summary = {"min": round(min(vals),3), "mean": round(float(sum(vals)/len(vals)),3), "max": round(max(vals),3)}
+        summary = {
+            "min": round(min(vals), 3),
+            "mean": round(float(sum(vals) / len(vals)), 3),
+            "max": round(max(vals), 3)
+        }
         return {"index": idx, "summary": summary, "timeseries": times}
     except Exception as e:
         traceback.print_exc()

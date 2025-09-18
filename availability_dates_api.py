@@ -17,7 +17,11 @@ def availability(req: AvailabilityRequest):
     if req.provider and req.provider.lower() == "aws":
         prefer_pc = False
     satellite = (req.satellite or "s2").lower()
-    coll_map = {"s2": ["sentinel-2-l2a"], "s1": ["sentinel-1"]}
+    coll_map = {
+    "s2": ["sentinel-2-l2a"],
+    "s1": ["sentinel-1-grd"] 
+    }
+
     collections = coll_map.get(satellite, ["sentinel-2-l2a"])
     try:
         items_pc = utils.search_planetary(collections, geom, f"{req.start_date}/{req.end_date}", limit=500) if prefer_pc else []

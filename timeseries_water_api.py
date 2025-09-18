@@ -30,6 +30,7 @@ class TSRequest(BaseModel):
     end_date: str
     index: str
     provider: Optional[str] = "both"
+    satellite: Optional[str] = "s2"
     max_items: Optional[int] = 8
 
 class TimePoint(BaseModel):
@@ -114,6 +115,7 @@ def _compute_water_for_item(item, geom, idx, out_h=16, out_w=16):
         if idx == "NDMI":
             needed = ["B08","B11"]
         elif idx == "NDWI":
+            # NDWI (McFeeters) = (Green - NIR) / (Green + NIR)
             needed = ["B03","B08"]
         elif idx == "SMI":
             needed = ["B08","B04"]
@@ -167,6 +169,11 @@ def water_timeseries(req: TSRequest):
     if idx not in VALID:
         raise HTTPException(status_code=400, detail=f"Unsupported index. Supported: {VALID}")
 
+    # disallow S1 for optical water indices
+    satellite = (req.satellite or "s2").lower()
+    if satellite.startswith("s1"):
+        raise HTTPException(status_code=400, detail=f"Index {idx} requires Sentinel-2 (optical). Sentinel-1 is radar-only.")
+
     prefer_pc = True
     if req.provider and req.provider.lower() == "aws":
         prefer_pc = False
@@ -174,34 +181,59 @@ def water_timeseries(req: TSRequest):
     try:
         collections = ["sentinel-2-l2a"]
         dt = f"{req.start_date}/{req.end_date}"
+
+        # Request more items so we can sample across full date range
+        search_limit = min(max(64, (req.max_items or 8) * 8), 500)
+
         items = []
         if prefer_pc:
-            items = search_planetary(collections, req.geometry, dt, limit=req.max_items)
+            items = search_planetary(collections, req.geometry, dt, limit=search_limit)
             if not items:
-                items = search_aws(collections, req.geometry, dt, limit=req.max_items)
+                items = search_aws(collections, req.geometry, dt, limit=search_limit)
         else:
-            items = search_aws(collections, req.geometry, dt, limit=req.max_items)
+            items = search_aws(collections, req.geometry, dt, limit=search_limit)
             if not items:
-                items = search_planetary(collections, req.geometry, dt, limit=req.max_items)
+                items = search_planetary(collections, req.geometry, dt, limit=search_limit)
 
         if not items:
             return {"index": idx, "summary": {"min": None, "mean": None, "max": None}, "timeseries": []}
 
         results = []
         with ThreadPoolExecutor(max_workers=MAX_THREADS) as ex:
-            futures = {ex.submit(_compute_water_for_item, it, req.geometry, idx, 16, 16): it for it in items[: req.max_items]}
+            futures = {ex.submit(_compute_water_for_item, it, req.geometry, idx, 16, 16): it for it in items}
             for fut in as_completed(futures):
-                res = fut.result()
+                try:
+                    res = fut.result()
+                except Exception:
+                    res = None
                 if res:
                     results.append(res)
 
         if not results:
             return {"index": idx, "summary": {"min": None, "mean": None, "max": None}, "timeseries": []}
 
-        results_sorted = sorted(results, key=lambda x: x[0])
+        # Aggregate by date
+        date_map: Dict[str, List[float]] = {}
+        for date_str, val in results:
+            if not date_str:
+                continue
+            date_map.setdefault(date_str, []).append(val)
+
+        aggregated = [(d, round(float(sum(vals) / len(vals)), 3)) for d, vals in date_map.items()]
+        aggregated_sorted = sorted(aggregated, key=lambda x: x[0])
+
+        # downsample evenly if requested fewer points
+        max_pts = req.max_items or len(aggregated_sorted)
+        if max_pts < 1:
+            max_pts = len(aggregated_sorted)
+        if len(aggregated_sorted) > max_pts:
+            n = max_pts
+            idxs = [int(round(i * (len(aggregated_sorted) - 1) / float(max(n - 1, 1)))) for i in range(n)]
+            aggregated_sorted = [aggregated_sorted[i] for i in idxs]
+
         times = []
         vals = []
-        for d, v in results_sorted:
+        for d, v in aggregated_sorted:
             times.append({"date": d, "value": v, "status": classify_water(idx, v)})
             vals.append(v)
 
