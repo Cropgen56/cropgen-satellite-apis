@@ -390,6 +390,7 @@ def _read_tile_into_stack(item, aoi_geojson, dst_transform, H, W, want_scl):
             if scl:
                 S = read_scl_window(scl, aoi_sc, H, W, dst_transform)
             out.update({"used": True, "bands": {"B04": R, "B08": N}, "S": S})
+          # read ancillary bands with nearest resampling to keep pixels sharp
             for bkey in ("B03","B02","B11","B12","B05","B8A","B04","B08","B05"):
                 a = assets.get(bkey) or assets.get(bkey.lower())
                 if a:
@@ -398,7 +399,8 @@ def _read_tile_into_stack(item, aoi_geojson, dst_transform, H, W, want_scl):
                         url = sign_href_if_pc(url)
                         try:
                             with rasterio.open(url) as ds:
-                                arr = read_band_window(ds, aoi_sc, H, W, dst_transform, Resampling.bilinear)
+                                # use nearest to avoid smoothing when we want crisp True Color
+                                arr = read_band_window(ds, aoi_sc, H, W, dst_transform, Resampling.nearest)
                                 if np.nanmax(arr) > 1.5:
                                     arr *= 1/10000.0
                                 out["bands"][bkey] = arr
