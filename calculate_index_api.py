@@ -29,9 +29,9 @@ def calculate_index(req: CalculateRequest):
     date_str = req.date
     width = int(req.width or 800)
     height = int(req.height or 800)
-    supersample = int(req.supersample or 3)  # ✅ Higher supersample for very smooth output
-    smooth = bool(req.smooth if req.smooth is not None else True)  # ✅ Enable smoothing by default
-    gaussian_sigma = float(req.gaussian_sigma or 2.0)  # ✅ Stronger smoothing for clearer edges
+    supersample = int(req.supersample or 3)  # Higher supersample for very smooth output
+    smooth = bool(req.smooth if req.smooth is not None else True)  # Enable smoothing by default
+    gaussian_sigma = float(req.gaussian_sigma or 2.0)  # Stronger smoothing for clearer edges
 
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
@@ -43,10 +43,10 @@ def calculate_index(req: CalculateRequest):
     if req.provider and req.provider.lower() == "aws":
         prefer_pc = False
 
-    #  Sentinel-1 cannot compute optical indices like NDVI, EVI, etc.
+    # Sentinel-1 cannot compute optical indices like NDVI, EVI, etc.
     OPTICAL_INDICES = {
-        "NDVI","EVI","EVI2","SAVI","MSAVI","NDMI","NDWI","SMI",
-        "CCC","NITROGEN","SOC","NDRE","RECI","TRUE_COLOR"
+        "NDVI", "EVI", "EVI2", "SAVI", "MSAVI", "NDMI", "NDWI", "SMI",
+        "CCC", "NITROGEN", "SOC", "NDRE", "RECI", "TRUE_COLOR"
     }
     if satellite.startswith("s1") and index_name in OPTICAL_INDICES:
         raise HTTPException(
@@ -55,20 +55,20 @@ def calculate_index(req: CalculateRequest):
         )
 
     index_band_map = {
-        'NDVI': ['B04','B08'],
-        'EVI': ['B04','B08','B02'],
-        'EVI2': ['B04','B08'],
-        'SAVI': ['B04','B08'],
-        'MSAVI': ['B04','B08'],
-        'NDMI': ['B08','B11'],
-        'NDWI': ['B03','B11'],
-        'SMI': ['B08','B11'],
-        'CCC': ['B03','B04','B05'],
-        'NITROGEN': ['B04','B05'],
-        'SOC': ['B03','B04','B11','B12'],
-        'NDRE': ['B8A','B05'],
-        'RECI': ['B08','B05'],
-        'TRUE_COLOR': ['B04','B03','B02'],
+        'NDVI': ['B04', 'B08'],
+        'EVI': ['B04', 'B08', 'B02'],
+        'EVI2': ['B04', 'B08'],
+        'SAVI': ['B04', 'B08'],
+        'MSAVI': ['B04', 'B08'],
+        'NDMI': ['B08', 'B11'],
+        'NDWI': ['B03', 'B11'],
+        'SMI': ['B08', 'B11'],
+        'CCC': ['B03', 'B04', 'B05'],
+        'NITROGEN': ['B04', 'B05'],
+        'SOC': ['B03', 'B04', 'B11', 'B12'],
+        'NDRE': ['B8A', 'B05'],
+        'RECI': ['B08', 'B05'],
+        'TRUE_COLOR': ['B04', 'B03', 'B02'],
     }
     if index_name not in index_band_map:
         raise HTTPException(status_code=400, detail=f"Unsupported index: {index_name}")
@@ -199,7 +199,7 @@ def calculate_index(req: CalculateRequest):
                 raise HTTPException(status_code=500, detail=f"Index compute error: {e}")
 
         if S_stack is not None:
-            classes = [8,9,10,11]
+            classes = [8, 9, 10, 11]
             index_arr[np.isin(S_stack, classes)] = np.nan
 
         index_arr[~aoi_mask] = np.nan
@@ -214,7 +214,7 @@ def calculate_index(req: CalculateRequest):
 
             valid_mask = np.isfinite(R) & np.isfinite(G) & np.isfinite(B) & aoi_mask
             if S_stack is not None:
-                bad = np.isin(S_stack, [3,8,9,10,11])
+                bad = np.isin(S_stack, [3, 8, 9, 10, 11])
                 valid_mask = valid_mask & (~bad)
 
             if not np.any(valid_mask):
@@ -242,13 +242,13 @@ def calculate_index(req: CalculateRequest):
             rgb = np.stack([Rn, Gn, Bn], axis=-1)
             rgb_uint8 = (rgb * 255.0).astype("uint8")
 
-            # ✅ Create RGBA with transparency outside polygon
+            # Create RGBA with transparency outside polygon
             rgba = np.zeros((H, W, 4), dtype=np.uint8)
             rgba[valid_mask, :3] = rgb_uint8[valid_mask]
             rgba[valid_mask, 3] = 255  # Full opacity inside polygon
             
             pil = Image.fromarray(rgba, mode="RGBA")
-            # ✅ Use LANCZOS for high-quality resampling
+            # Use LANCZOS for high-quality resampling
             pil = pil.resize((width, height), resample=Image.LANCZOS)
             buf = io.BytesIO()
             pil.save(buf, format="PNG", optimize=True)
@@ -276,14 +276,14 @@ def calculate_index(req: CalculateRequest):
             palette = utils.index_palettes_labels[index_name]['palette']
             labels = utils.index_palettes_labels[index_name]['labels']
         else:
-            palette, labels = utils.PALETTE_MAP.get(index_name, (utils.PALETTE, utils.LABELS))
+            palette, labels = utils.PALETTE_MAP.get(index_name, ([], []))
 
-        # ✅ Enable transparency for areas outside polygon
+        # Enable transparency for areas outside polygon
         img_b64 = utils.render_spread_png_fast(
             bins_full, NDVI_canvas, res_m,
             supersample, smooth, gaussian_sigma,
-            width, height, palette=palette, labels=labels, 
-            nodata_transparent=True  # ✅ Changed to True
+            width, height, palette=palette, labels=labels,
+            nodata_transparent=True
         )
 
         legend = []

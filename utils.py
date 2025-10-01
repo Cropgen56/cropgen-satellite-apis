@@ -40,28 +40,161 @@ PLANETARY_STAC = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
 THREADS = min(4, (os.cpu_count() or 4))
 
-# ---------- Palettes & labels ----------
-PALETTE = ['#000000','#a50026','#d73027','#f46d43','#fdae61',
-           '#fee08b','#ffffbf','#d9ef8b','#a6d96a','#66bd63',
-           '#1a9850','#006837']
-LABELS = ["No Vegetation","Very Poor","Poor","Fair","Moderate","Moderate-Good",
-          "Good","Very Good","Excellent","Dense Vegetation","Very Dense","Extremely Dense"]
-EDGES = np.array([-0.2,0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.01], dtype="float32")
+# ---------- Edges for binning ----------
+EDGES = np.array([-0.2, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.01], dtype="float32")
 
-PALETTE_MAP = {
-    "NDVI": (PALETTE, LABELS),
-    "SAVI": (PALETTE, LABELS),
-    "EVI": (PALETTE, LABELS),
-    "EVI2": (PALETTE, LABELS),
-    "NDMI": (PALETTE, LABELS),
-    "NDWI": (PALETTE, LABELS),
-    "SMI": (PALETTE, LABELS),
-    "CCC": (PALETTE, LABELS),
-    "NITROGEN": (PALETTE, LABELS),
-    "SOC": (PALETTE, LABELS),
-    "NDRE": (PALETTE, LABELS),
-    "RECI": (PALETTE, LABELS),
-    "TRUE_COLOR": (["#000000"], ["True Color"]),
+# ---------- Custom Palettes & Labels ----------
+index_palettes_labels = {
+    'NDVI': {
+        'palette': [
+            '#ffffff', '#d73027', '#f46d43', '#fdae61', '#fee08b', '#d9ef8b',
+            '#a6d96a', '#66bd63', '#1a9850', '#006837', '#004529'
+        ],
+        'labels': [
+            'Clouds', 'Very Poor', 'Poor', 'Fair', 'Moderate', 'Good',
+            'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
+        ]
+    },
+    'EVI': {
+        'palette': [
+            '#ffffff',  # Clouds - white
+            '#a50026',  # Very Low - dark red
+            '#d73027',
+            '#f46d43',
+            '#fdae61',
+            '#d9ef8b',
+            '#d9ef8b',
+            '#a6d96a',
+            '#66bd63',
+            '#1a9850',
+            '#006837'   # Extreme - dark green
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
+        ]
+    },
+    'EVI2': {
+        'palette': [
+            '#ffffff',
+            '#a50026', '#d73027', '#f46d43', '#fdae61', '#d9ef8b',
+            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
+        ]
+    },
+    'SAVI': {
+        'palette': [
+            '#ffffff',
+            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
+            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
+        ]
+    },
+    'MSAVI': {
+        'palette': [
+            '#ffffff',
+            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
+            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
+        ]
+    },
+    'NDRE': {
+        'palette': [
+            '#ffffff',
+            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
+            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
+        ]
+    },
+    'CCC': {
+        'palette': [
+            '#ffffff',
+            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
+            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
+        ]
+    },
+    'NITROGEN': {
+        'palette': [
+            '#ffffff',
+            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
+            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
+        ]
+    },
+    'SOC': {
+        'palette': [
+            '#ffffe5', '#f7fcb9', '#d9f0a3', '#addd8e', '#78c679',
+            '#41ab5d', '#238443', '#006837', '#004529', '#002d1d'
+        ],
+        'labels': [
+            'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
+        ]
+    },
+    'RECI': {
+        'palette': [
+            '#ffffff',
+            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
+            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
+        ]
+    },
+    # Water/Moisture indices: Clouds (white) + 10 blue shades pale → dark
+    'NDMI': {
+        'palette': [
+            '#ffffff',  # Clouds
+            '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6',
+            '#2171b5', '#08519c', '#08306b', '#041b3d', '#021122'
+        ],
+        'labels': [
+            'Clouds', 'Very Dry', 'Dry', 'Low Moisture', 'Moderate Moisture',
+            'Moist', 'Good Moisture', 'High Moisture', 'Very Moist', 'Wet', 'Waterlogged'
+        ]
+    },
+    'NDWI': {
+        'palette': [
+            '#ffffff',
+            '#eff3ff', '#bdd7e7', '#6baed6', '#3182bd', '#08519c',
+            '#084081', '#042340', '#021720', '#010d10', '#000500'
+        ],
+        'labels': [
+            'Clouds', 'Very Dry', 'Dry', 'Low Water', 'Moderate Water',
+            'Moist', 'High Moisture', 'Very Moist', 'Wet', 'Water Saturated', 'Waterlogged'
+        ]
+    },
+    'SMI': {
+        'palette': [
+            '#ffffff',
+            '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6',
+            '#2171b5', '#08519c', '#08306b', '#041b3d', "#041A33"
+        ],
+        'labels': [
+            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
+            'Good', 'Very Good', 'Excellent', 'Wet', 'Very Wet', 'Flooded'
+        ]
+    }
 }
 
 # ---------- STAC helpers ----------
@@ -310,6 +443,7 @@ def pick_best_item(aoi_geojson, start, end, prefer_pc=True, satellite="s2"):
         if not items:
             items = search_planetary(collections_try, aoi_geojson, f"{start}/{end}", limit=12)
     if not items:
+        from datetime import datetime, timedelta
         fmt = "%Y-%m-%d"
         s = datetime.strptime(start, fmt) - timedelta(days=14)
         e = datetime.strptime(end, fmt) + timedelta(days=14)
@@ -438,10 +572,10 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
                            supersample: int, smooth: bool, gaussian_sigma: float,
                            out_w: int, out_h: int, palette: Optional[List[str]] = None,
                            labels: Optional[List[str]] = None, nodata_transparent: bool = True) -> str:
-    if palette is None:
-        palette = PALETTE
-    if labels is None:
-        labels = LABELS
+    if palette is None or labels is None:
+        index_name = "NDVI"  # Default to NDVI if not specified
+        palette = index_palettes_labels.get(index_name, {}).get('palette', [])
+        labels = index_palettes_labels.get(index_name, {}).get('labels', [])
 
     z = max(1, int(supersample))
     if (z > 1 or smooth) and NDVI_canvas is not None:
@@ -529,161 +663,3 @@ def temporal_fill_median(band_key: str, items: List[Any], aoi_geojson, dst_trans
 geometry_mask = geometry_mask
 mapping = mapping
 Transformer = Transformer
-
-
-
-# ---------- Custom Palettes & Labels ----------
-
-index_palettes_labels = {
-    'NDVI': {
-        'palette': [
-            '#ffffff', '#d73027', '#f46d43', '#fdae61', '#fee08b', '#d9ef8b',
-            '#a6d96a', '#66bd63', '#1a9850', '#006837', '#004529'
-        ],
-        'labels': [
-            'Clouds', 'Very Poor', 'Poor', 'Fair', 'Moderate', 'Good',
-            'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
-        ]
-    },
-    'EVI': {
-        'palette': [
-            '#ffffff',  # Clouds - white
-            '#a50026',  # Very Low - dark red
-            '#d73027',
-            '#f46d43',
-            '#fdae61',
-            '#d9ef8b',
-            '#d9ef8b',
-            '#a6d96a',
-            '#66bd63',
-            '#1a9850',
-            '#006837'   # Extreme - dark green
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
-        ]
-    },
-    'EVI2': {
-        'palette': [
-            '#ffffff',
-            '#a50026', '#d73027', '#f46d43', '#fdae61', '#d9ef8b',
-            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
-        ]
-    },
-    'SAVI': {
-        'palette': [
-            '#ffffff',
-            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
-            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
-        ]
-    },
-    'MSAVI': {
-        'palette': [
-            '#ffffff',
-            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
-            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
-        ]
-    },
-    'NDRE': {
-        'palette': [
-            '#ffffff',
-            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
-            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
-        ]
-    },
-    'CCC': {
-        'palette': [
-            '#ffffff',
-            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
-            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
-        ]
-    },
-    'NITROGEN': {
-        'palette': [
-            '#ffffff',
-            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
-            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
-        ]
-    },
-    'SOC': {
-        'palette': [
-            '#ffffe5', '#f7fcb9', '#d9f0a3', '#addd8e', '#78c679',
-            '#41ab5d', '#238443', '#006837', '#004529', '#002d1d'
-        ],
-        'labels': [
-            'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
-        ]
-    },
-    'RECI': {
-        'palette': [
-            '#ffffff',
-            '#a50026', '#d73027', '#f46d43', '#fdae61', '#fee08b',
-            '#d9ef8b', '#a6d96a', '#66bd63', '#1a9850', '#006837'
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
-        ]
-    },
-
-    # Water/Moisture indices: Clouds (white) + 10 blue shades pale → dark
-    'NDMI': {
-        'palette': [
-            '#ffffff',  # Clouds
-            '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6',
-            '#2171b5', '#08519c', '#08306b', '#041b3d', '#021122'
-        ],
-        'labels': [
-            'Clouds', 'Very Dry', 'Dry', 'Low Moisture', 'Moderate Moisture',
-            'Moist', 'Good Moisture', 'High Moisture', 'Very Moist', 'Wet', 'Waterlogged'
-        ]
-    },
-    'NDWI': {
-        'palette': [
-            '#ffffff',
-            '#eff3ff', '#bdd7e7', '#6baed6', '#3182bd', '#08519c',
-            '#084081', '#042340', '#021720', '#010d10', '#000500'
-        ],
-        'labels': [
-            'Clouds', 'Very Dry', 'Dry', 'Low Water', 'Moderate Water',
-            'Moist', 'High Moisture', 'Very Moist', 'Wet', 'Water Saturated', 'Waterlogged'
-        ]
-    },
-    'SMI': {
-        'palette': [
-            '#ffffff',
-            '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6',
-            '#2171b5', '#08519c', '#08306b', '#041b3d', "#041A33"
-        ],
-        'labels': [
-            'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
-            'Good', 'Very Good', 'Excellent', 'Wet', 'Very Wet', 'Flooded'
-        ]
-    }
-}
