@@ -43,7 +43,7 @@ def calculate_index(req: CalculateRequest):
     if req.provider and req.provider.lower() == "aws":
         prefer_pc = False
 
-    # ❌ Sentinel-1 cannot compute optical indices like NDVI, EVI, etc.
+    #  Sentinel-1 cannot compute optical indices like NDVI, EVI, etc.
     OPTICAL_INDICES = {
         "NDVI","EVI","EVI2","SAVI","MSAVI","NDMI","NDWI","SMI",
         "CCC","NITROGEN","SOC","NDRE","RECI","TRUE_COLOR"

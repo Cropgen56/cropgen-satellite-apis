@@ -10,6 +10,7 @@ app = FastAPI(root_path="/v4")
 # Enable CORS for localhost:3000
 origins = [
     "http://localhost:3000",
+    "https://app.cropgenapp.com"
 ]
 
 app.add_middleware(
