@@ -450,7 +450,12 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
         if z > 1:
             Vz = zoom(V, z, order=1)
             Mz = zoom(M, z, order=1)
-            NDVI_up = np.where(Mz > 1e-6, Vz / Mz, np.nan)
+            # ✅ FIX: Safe division with np.divide
+            NDVI_up = np.divide(
+                Vz, Mz,
+                out=np.full_like(Vz, np.nan, dtype=float),
+                where=(Mz > 1e-6)
+            )
         else:
             NDVI_up = NDVI_canvas
         if smooth:
@@ -459,7 +464,12 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
             vals = np.where(np.isfinite(NDVI_up), NDVI_up, 0.0).astype("float32")
             num = gaussian_filter(vals, sigma=sigma)
             den = gaussian_filter(inside, sigma=sigma)
-            NDVI_up = np.where(den > 1e-6, num / den, np.nan)
+            # ✅ FIX: Safe division instead of num / den
+            NDVI_up = np.divide(
+                num, den,
+                out=np.full_like(num, np.nan, dtype=float),
+                where=(den > 1e-6)
+            )
         bins_up = np.digitize(np.clip(NDVI_up, EDGES[0], EDGES[-1] - 1e-6), EDGES).astype("uint8")
         bins_up = np.where(np.isfinite(NDVI_up), bins_up, 0)
     else:
@@ -483,7 +493,8 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
         rgba[~mask_valid, :] = np.array([255,255,255,255], dtype=np.uint8)
 
     pil = Image.fromarray(rgba, mode="RGBA")
-    pil = pil.resize((out_w, out_h), resample=Image.NEAREST)
+    # Use LANCZOS for smoother output
+    pil = pil.resize((out_w, out_h), resample=Image.LANCZOS)
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
     return base64.b64encode(buf.getvalue()).decode("ascii")

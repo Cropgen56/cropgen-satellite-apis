@@ -29,9 +29,9 @@ def calculate_index(req: CalculateRequest):
     date_str = req.date
     width = int(req.width or 800)
     height = int(req.height or 800)
-    supersample = int(req.supersample or 1)
-    smooth = bool(req.smooth)
-    gaussian_sigma = float(req.gaussian_sigma or 1.0)
+    supersample = int(req.supersample or 3)  # ✅ Higher supersample for very smooth output
+    smooth = bool(req.smooth if req.smooth is not None else True)  # ✅ Enable smoothing by default
+    gaussian_sigma = float(req.gaussian_sigma or 2.0)  # ✅ Stronger smoothing for clearer edges
 
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
@@ -242,10 +242,14 @@ def calculate_index(req: CalculateRequest):
             rgb = np.stack([Rn, Gn, Bn], axis=-1)
             rgb_uint8 = (rgb * 255.0).astype("uint8")
 
-            rgba = np.ones((H, W, 3), dtype=np.uint8) * 255
-            rgba[valid_mask] = rgb_uint8[valid_mask]
-            pil = Image.fromarray(rgba, mode="RGB")
-            pil = pil.resize((width, height), resample=Image.NEAREST)
+            # ✅ Create RGBA with transparency outside polygon
+            rgba = np.zeros((H, W, 4), dtype=np.uint8)
+            rgba[valid_mask, :3] = rgb_uint8[valid_mask]
+            rgba[valid_mask, 3] = 255  # Full opacity inside polygon
+            
+            pil = Image.fromarray(rgba, mode="RGBA")
+            # ✅ Use LANCZOS for high-quality resampling
+            pil = pil.resize((width, height), resample=Image.LANCZOS)
             buf = io.BytesIO()
             pil.save(buf, format="PNG", optimize=True)
             img_b64 = base64.b64encode(buf.getvalue()).decode("ascii")
@@ -274,10 +278,12 @@ def calculate_index(req: CalculateRequest):
         else:
             palette, labels = utils.PALETTE_MAP.get(index_name, (utils.PALETTE, utils.LABELS))
 
+        # ✅ Enable transparency for areas outside polygon
         img_b64 = utils.render_spread_png_fast(
             bins_full, NDVI_canvas, res_m,
             supersample, smooth, gaussian_sigma,
-            width, height, palette=palette, labels=labels, nodata_transparent=False
+            width, height, palette=palette, labels=labels, 
+            nodata_transparent=True  # ✅ Changed to True
         )
 
         legend = []
