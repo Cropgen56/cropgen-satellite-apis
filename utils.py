@@ -1,31 +1,34 @@
-# shared helpers and constants
 import os
 import io
 import base64
 import math
 import time
-from contextlib import nullcontext
-from concurrent.futures import ThreadPoolExecutor, as_completed
+from datetime import datetime, timedelta
 from typing import Any, Dict, List, Optional, Tuple
+from contextlib import nullcontext
 
 import numpy as np
-from affine import Affine
-from scipy.ndimage import gaussian_filter, zoom
-from PIL import Image
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
-# raster/stac/geometry libraries
+# Geo / raster
 import rasterio
 from rasterio.windows import from_bounds, Window
 from rasterio.windows import transform as win_transform, bounds as win_bounds
 from rasterio.enums import Resampling
-from rasterio.warp import reproject
 from rasterio.features import geometry_mask
+from rasterio.warp import reproject
+from affine import Affine
 from shapely.geometry import shape, mapping
 from shapely.ops import transform as shp_transform
 from pyproj import Transformer
+from scipy.ndimage import gaussian_filter, zoom
 
+# STAC & providers
 from pystac_client import Client
 import planetary_computer
+
+# plotting / image
+from PIL import Image
 
 # ---------- Environment / tuning ----------
 os.environ.setdefault("CPL_VSIL_CURL_USE_HEAD", "FALSE")
@@ -38,12 +41,21 @@ os.environ.setdefault("GDAL_CACHEMAX", "512")
 EARTH_SEARCH_AWS = "https://earth-search.aws.element84.com/v1"
 PLANETARY_STAC = "https://planetarycomputer.microsoft.com/api/stac/v1"
 
+# default threads (reduce if network-bound)
 THREADS = min(4, (os.cpu_count() or 4))
 
-# ---------- Edges for binning ----------
-EDGES = np.array([-0.2, 0, 0.1, 0.2, 0.3, 0.4, 0.5, 0.6, 0.7, 0.8, 0.9, 1.01], dtype="float32")
+# ---------- Palettes & labels ----------
+# Default palette and labels (using NDVI as fallback)
+PALETTE = [
+    '#ffffff', '#d73027', '#f46d43', '#fdae61', '#fee08b', '#d9ef8b',
+    '#a6d96a', '#66bd63', '#1a9850', '#006837', '#004529'
+]
+LABELS = [
+    'Clouds', 'Very Poor', 'Poor', 'Fair', 'Moderate', 'Good',
+    'Very Good', 'Excellent', 'Dense', 'Very Dense', 'Extreme'
+]
+EDGES = np.array([-0.2,0,0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1.01], dtype="float32")
 
-# ---------- Custom Palettes & Labels ----------
 index_palettes_labels = {
     'NDVI': {
         'palette': [
@@ -161,7 +173,6 @@ index_palettes_labels = {
             'Good', 'Very Good', 'Excellent', 'Rich', 'Very Rich', 'Excessive'
         ]
     },
-    # Water/Moisture indices: Clouds (white) + 10 blue shades pale → dark
     'NDMI': {
         'palette': [
             '#ffffff',  # Clouds
@@ -188,7 +199,7 @@ index_palettes_labels = {
         'palette': [
             '#ffffff',
             '#deebf7', '#c6dbef', '#9ecae1', '#6baed6', '#4292c6',
-            '#2171b5', '#08519c', '#08306b', '#041b3d', "#041A33"
+            '#2171b5', '#08519c', '#08306b', '#041b3d', '#041A33'
         ],
         'labels': [
             'Clouds', 'Very Low', 'Low', 'Fair', 'Moderate',
@@ -197,7 +208,24 @@ index_palettes_labels = {
     }
 }
 
-# ---------- STAC helpers ----------
+PALETTE_MAP = {
+    'NDVI': (index_palettes_labels['NDVI']['palette'], index_palettes_labels['NDVI']['labels']),
+    'EVI': (index_palettes_labels['EVI']['palette'], index_palettes_labels['EVI']['labels']),
+    'EVI2': (index_palettes_labels['EVI2']['palette'], index_palettes_labels['EVI2']['labels']),
+    'SAVI': (index_palettes_labels['SAVI']['palette'], index_palettes_labels['SAVI']['labels']),
+    'MSAVI': (index_palettes_labels['MSAVI']['palette'], index_palettes_labels['MSAVI']['labels']),
+    'NDRE': (index_palettes_labels['NDRE']['palette'], index_palettes_labels['NDRE']['labels']),
+    'CCC': (index_palettes_labels['CCC']['palette'], index_palettes_labels['CCC']['labels']),
+    'NITROGEN': (index_palettes_labels['NITROGEN']['palette'], index_palettes_labels['NITROGEN']['labels']),
+    'SOC': (index_palettes_labels['SOC']['palette'], index_palettes_labels['SOC']['labels']),
+    'RECI': (index_palettes_labels['RECI']['palette'], index_palettes_labels['RECI']['labels']),
+    'NDMI': (index_palettes_labels['NDMI']['palette'], index_palettes_labels['NDMI']['labels']),
+    'NDWI': (index_palettes_labels['NDWI']['palette'], index_palettes_labels['NDWI']['labels']),
+    'SMI': (index_palettes_labels['SMI']['palette'], index_palettes_labels['SMI']['labels']),
+    'TRUE_COLOR': (["#000000"], ["True Color"]),
+}
+
+# ---------- Utility / index math ----------
 def sign_href_if_pc(href: Optional[str]) -> Optional[str]:
     if not href:
         return None
@@ -267,8 +295,8 @@ def compute_index_array_by_name(index_name: str, bands: Dict[str, np.ndarray]) -
         if missing(NIR, SWIR): raise ValueError("NDMI requires B08,B11")
         return (NIR - SWIR) / (NIR + SWIR + eps)
     if name == "NDWI":
-        GREEN, SWIR = bands.get("B03"), bands.get("B08")
-        if missing(GREEN, SWIR): raise ValueError("NDWI requires B03,B08")
+        GREEN, SWIR = bands.get("B03"), bands.get("B11")
+        if missing(GREEN, SWIR): raise ValueError("NDWI requires B03,B11")
         return (GREEN - SWIR) / (GREEN + SWIR + eps)
     if name == "SMI":
         NIR, SWIR = bands.get("B08"), bands.get("B11")
@@ -294,10 +322,6 @@ def compute_index_array_by_name(index_name: str, bands: Dict[str, np.ndarray]) -
         B8, B5 = bands.get("B08"), bands.get("B05")
         if missing(B8, B5): raise ValueError("RECI requires B08,B05")
         return (B8 - B5) / (B5 + eps)
-    if name == "SUCROSE":
-        B11, B04 = bands.get("B11"), bands.get("B04")
-        if missing(B11, B04): raise ValueError("SUCROSE requires B11 and B04")
-        return (B11 - B04) / (B11 + B04 + eps)
     if name == "TRUE_COLOR":
         raise ValueError("TRUE_COLOR is a special rendering path (RGB)")
 
@@ -427,12 +451,10 @@ def quick_keep_pct(item, aoi_geojson):
 
 # pick best item
 def pick_best_item(aoi_geojson, start, end, prefer_pc=True, satellite="s2"):
-    
     if satellite and satellite.lower().startswith("s1"):
-        collections_try = ["sentinel-1-grd"] 
+        collections_try = ["sentinel-1"]
     else:
         collections_try = ["sentinel-2-l2a", "sentinel-2-l1c"]
-
     items = []
     if prefer_pc:
         items = search_planetary(collections_try, aoi_geojson, f"{start}/{end}", limit=12)
@@ -443,7 +465,6 @@ def pick_best_item(aoi_geojson, start, end, prefer_pc=True, satellite="s2"):
         if not items:
             items = search_planetary(collections_try, aoi_geojson, f"{start}/{end}", limit=12)
     if not items:
-        from datetime import datetime, timedelta
         fmt = "%Y-%m-%d"
         s = datetime.strptime(start, fmt) - timedelta(days=14)
         e = datetime.strptime(end, fmt) + timedelta(days=14)
@@ -524,7 +545,6 @@ def _read_tile_into_stack(item, aoi_geojson, dst_transform, H, W, want_scl):
             if scl:
                 S = read_scl_window(scl, aoi_sc, H, W, dst_transform)
             out.update({"used": True, "bands": {"B04": R, "B08": N}, "S": S})
-          # read ancillary bands with nearest resampling to keep pixels sharp
             for bkey in ("B03","B02","B11","B12","B05","B8A","B04","B08","B05"):
                 a = assets.get(bkey) or assets.get(bkey.lower())
                 if a:
@@ -533,8 +553,7 @@ def _read_tile_into_stack(item, aoi_geojson, dst_transform, H, W, want_scl):
                         url = sign_href_if_pc(url)
                         try:
                             with rasterio.open(url) as ds:
-                                # use nearest to avoid smoothing when we want crisp True Color
-                                arr = read_band_window(ds, aoi_sc, H, W, dst_transform, Resampling.nearest)
+                                arr = read_band_window(ds, aoi_sc, H, W, dst_transform, Resampling.bilinear)
                                 if np.nanmax(arr) > 1.5:
                                     arr *= 1/10000.0
                                 out["bands"][bkey] = arr
@@ -572,10 +591,10 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
                            supersample: int, smooth: bool, gaussian_sigma: float,
                            out_w: int, out_h: int, palette: Optional[List[str]] = None,
                            labels: Optional[List[str]] = None, nodata_transparent: bool = True) -> str:
-    if palette is None or labels is None:
-        index_name = "NDVI"  # Default to NDVI if not specified
-        palette = index_palettes_labels.get(index_name, {}).get('palette', [])
-        labels = index_palettes_labels.get(index_name, {}).get('labels', [])
+    if palette is None:
+        palette = PALETTE
+    if labels is None:
+        labels = LABELS
 
     z = max(1, int(supersample))
     if (z > 1 or smooth) and NDVI_canvas is not None:
@@ -584,12 +603,7 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
         if z > 1:
             Vz = zoom(V, z, order=1)
             Mz = zoom(M, z, order=1)
-            # ✅ FIX: Safe division with np.divide
-            NDVI_up = np.divide(
-                Vz, Mz,
-                out=np.full_like(Vz, np.nan, dtype=float),
-                where=(Mz > 1e-6)
-            )
+            NDVI_up = np.where(Mz > 1e-6, Vz / Mz, np.nan)
         else:
             NDVI_up = NDVI_canvas
         if smooth:
@@ -598,12 +612,7 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
             vals = np.where(np.isfinite(NDVI_up), NDVI_up, 0.0).astype("float32")
             num = gaussian_filter(vals, sigma=sigma)
             den = gaussian_filter(inside, sigma=sigma)
-            # ✅ FIX: Safe division instead of num / den
-            NDVI_up = np.divide(
-                num, den,
-                out=np.full_like(num, np.nan, dtype=float),
-                where=(den > 1e-6)
-            )
+            NDVI_up = np.where(den > 1e-6, num / den, np.nan)
         bins_up = np.digitize(np.clip(NDVI_up, EDGES[0], EDGES[-1] - 1e-6), EDGES).astype("uint8")
         bins_up = np.where(np.isfinite(NDVI_up), bins_up, 0)
     else:
@@ -627,7 +636,7 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
         rgba[~mask_valid, :] = np.array([255,255,255,255], dtype=np.uint8)
 
     pil = Image.fromarray(rgba, mode="RGBA")
-    # Use LANCZOS for smoother output
+    # Use LANCZOS for high-quality resampling to achieve a spreadier effect
     pil = pil.resize((out_w, out_h), resample=Image.LANCZOS)
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
@@ -657,9 +666,3 @@ def temporal_fill_median(band_key: str, items: List[Any], aoi_geojson, dst_trans
     stacked = np.stack(stacks, axis=0)
     median = np.nanmedian(stacked, axis=0)
     return median
-
-# re-export some commonly used names for convenience
-# so other modules can import utils.geometry_mask, utils.mapping, utils.Transformer
-geometry_mask = geometry_mask
-mapping = mapping
-Transformer = Transformer

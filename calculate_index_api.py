@@ -29,9 +29,9 @@ def calculate_index(req: CalculateRequest):
     date_str = req.date
     width = int(req.width or 800)
     height = int(req.height or 800)
-    supersample = int(req.supersample or 3)  # Higher supersample for very smooth output
+    supersample = int(req.supersample or 4)  # Increased to 4 for smoother gradients
     smooth = bool(req.smooth if req.smooth is not None else True)  # Enable smoothing by default
-    gaussian_sigma = float(req.gaussian_sigma or 2.0)  # Stronger smoothing for clearer edges
+    gaussian_sigma = float(req.gaussian_sigma or 3.0)  # Increased to 3.0 for stronger smoothing
 
     try:
         datetime.strptime(date_str, "%Y-%m-%d")
@@ -276,14 +276,14 @@ def calculate_index(req: CalculateRequest):
             palette = utils.index_palettes_labels[index_name]['palette']
             labels = utils.index_palettes_labels[index_name]['labels']
         else:
-            palette, labels = utils.PALETTE_MAP.get(index_name, ([], []))
+            palette, labels = utils.PALETTE_MAP.get(index_name, (utils.PALETTE, utils.LABELS))
 
-        # Enable transparency for areas outside polygon
+        # Use nodata_transparent=False to show white for nodata/cloud, matching reference API
         img_b64 = utils.render_spread_png_fast(
             bins_full, NDVI_canvas, res_m,
             supersample, smooth, gaussian_sigma,
             width, height, palette=palette, labels=labels,
-            nodata_transparent=True
+            nodata_transparent=False
         )
 
         legend = []
