@@ -590,7 +590,8 @@ def hex_to_rgba_tuple(hexcolor: str) -> Tuple[int,int,int,int]:
 def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res_m: float,
                            supersample: int, smooth: bool, gaussian_sigma: float,
                            out_w: int, out_h: int, palette: Optional[List[str]] = None,
-                           labels: Optional[List[str]] = None, nodata_transparent: bool = True) -> str:
+                           labels: Optional[List[str]] = None, nodata_transparent: bool = True,
+                           aoi_ll_geojson: Optional[dict] = None, transform: Optional[Affine] = None) -> str:
     if palette is None:
         palette = PALETTE
     if labels is None:
@@ -601,8 +602,8 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
         V = np.where(np.isfinite(NDVI_canvas), NDVI_canvas, 0.0).astype("float32")
         M = np.isfinite(NDVI_canvas).astype("float32")
         if z > 1:
-            Vz = zoom(V, z, order=1)
-            Mz = zoom(M, z, order=1)
+            Vz = zoom(V, z, order=0)  # Use nearest neighbor for sharpness
+            Mz = zoom(M, z, order=0)
             NDVI_up = np.where(Mz > 1e-6, Vz / Mz, np.nan)
         else:
             NDVI_up = NDVI_canvas
@@ -623,6 +624,12 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
     if len(palette_rgba) < 2:
         palette_rgba = [(0,0,0,0), (0,255,0,255)]
 
+    # Apply geometry mask if AOI is provided
+    if aoi_ll_geojson is not None and transform is not None:
+        aoi_sc = aoi_to_scene(aoi_ll_geojson, transform.to_gdal())
+        mask = geometry_mask([mapping(aoi_sc)], out_shape=(Hs, Ws), transform=transform, invert=True)
+        bins_up = np.where(mask, bins_up, 0)
+
     rgba = np.zeros((Hs, Ws, 4), dtype=np.uint8)
     mask_valid = (bins_up > 0)
 
@@ -636,8 +643,8 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
         rgba[~mask_valid, :] = np.array([255,255,255,255], dtype=np.uint8)
 
     pil = Image.fromarray(rgba, mode="RGBA")
-    # Use LANCZOS for high-quality resampling to achieve a spreadier effect
-    pil = pil.resize((out_w, out_h), resample=Image.LANCZOS)
+    # Use NEAREST for sharp edges instead of LANCZOS
+    pil = pil.resize((out_w, out_h), resample=Image.NEAREST)
     buf = io.BytesIO()
     pil.save(buf, format="PNG", optimize=True)
     return base64.b64encode(buf.getvalue()).decode("ascii")
