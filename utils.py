@@ -591,18 +591,39 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
                            supersample: int, smooth: bool, gaussian_sigma: float,
                            out_w: int, out_h: int, palette: Optional[List[str]] = None,
                            labels: Optional[List[str]] = None, nodata_transparent: bool = True,
-                           aoi_ll_geojson: Optional[dict] = None, transform: Optional[Affine] = None) -> str:
+                           aoi_ll_geojson: Optional[dict] = None, transform: Optional[Affine] = None,
+                           crs = None) -> str:
     if palette is None:
         palette = PALETTE
     if labels is None:
         labels = LABELS
 
+    # Create geometry mask BEFORE upsampling to ensure proper clipping
+    Hs_orig, Ws_orig = bins_canvas.shape
+    aoi_mask_orig = None
+    if aoi_ll_geojson is not None and transform is not None:
+        try:
+            if crs is not None:
+                crs_str = crs.to_string() if hasattr(crs, 'to_string') else str(crs)
+            else:
+                crs_str = "EPSG:4326"
+            aoi_sc = aoi_to_scene(aoi_ll_geojson, crs_str)
+            aoi_mask_orig = geometry_mask([mapping(aoi_sc)], out_shape=(Hs_orig, Ws_orig), transform=transform, invert=True)
+        except Exception:
+            aoi_mask_orig = None
+
     z = max(1, int(supersample))
     if (z > 1 or smooth) and NDVI_canvas is not None:
         V = np.where(np.isfinite(NDVI_canvas), NDVI_canvas, 0.0).astype("float32")
         M = np.isfinite(NDVI_canvas).astype("float32")
+        
+        # Apply AOI mask to the data BEFORE upsampling
+        if aoi_mask_orig is not None:
+            V = np.where(aoi_mask_orig, V, 0.0)
+            M = np.where(aoi_mask_orig, M, 0.0)
+        
         if z > 1:
-            Vz = zoom(V, z, order=0)  # Use nearest neighbor for sharpness
+            Vz = zoom(V, z, order=0)
             Mz = zoom(M, z, order=0)
             NDVI_up = np.where(Mz > 1e-6, Vz / Mz, np.nan)
         else:
@@ -618,34 +639,45 @@ def render_spread_png_fast(bins_canvas: np.ndarray, NDVI_canvas: np.ndarray, res
         bins_up = np.where(np.isfinite(NDVI_up), bins_up, 0)
     else:
         bins_up = bins_canvas.astype("uint8")
+        # Apply mask to bins directly if no upsampling
+        if aoi_mask_orig is not None:
+            bins_up = np.where(aoi_mask_orig, bins_up, 0)
 
     Hs, Ws = bins_up.shape
     palette_rgba = [hex_to_rgba_tuple(c) for c in palette]
     if len(palette_rgba) < 2:
         palette_rgba = [(0,0,0,0), (0,255,0,255)]
 
-    # Apply geometry mask if AOI is provided
-    if aoi_ll_geojson is not None and transform is not None:
-        aoi_sc = aoi_to_scene(aoi_ll_geojson, transform.to_gdal())
-        mask = geometry_mask([mapping(aoi_sc)], out_shape=(Hs, Ws), transform=transform, invert=True)
-        bins_up = np.where(mask, bins_up, 0)
+    # Upscale the mask if we upsampled the data
+    aoi_mask = None
+    if aoi_mask_orig is not None:
+        if z > 1:
+            # Upscale the mask using nearest neighbor to match bins_up dimensions
+            aoi_mask = zoom(aoi_mask_orig.astype("float32"), z, order=0) > 0.5
+        else:
+            aoi_mask = aoi_mask_orig
 
     rgba = np.zeros((Hs, Ws, 4), dtype=np.uint8)
+    
+    # Determine valid pixels - combine data validity with geometry mask
     mask_valid = (bins_up > 0)
+    if aoi_mask is not None:
+        mask_valid = mask_valid & aoi_mask
 
     max_palette_idx = len(palette_rgba) - 1
     bins_idx = np.where(mask_valid, np.minimum(bins_up, max_palette_idx), 0).astype(np.int32)
     lut = np.array(palette_rgba, dtype=np.uint8)
-    rgba[..., :] = lut[bins_idx]
-    if nodata_transparent:
-        rgba[~mask_valid, 3] = 0
-    else:
-        rgba[~mask_valid, :] = np.array([255,255,255,255], dtype=np.uint8)
+    rgba[mask_valid, :] = lut[bins_idx[mask_valid]]
+    
+    # CRITICAL: Set fully transparent for invalid pixels (outside polygon or no data)
+    # Alpha channel must be 0 for transparency
+    rgba[~mask_valid, :] = [0, 0, 0, 0]  # Fully transparent black
 
     pil = Image.fromarray(rgba, mode="RGBA")
-    # Use NEAREST for sharp edges instead of LANCZOS
-    pil = pil.resize((out_w, out_h), resample=Image.NEAREST)
+    # Use LANCZOS for better quality while preserving transparency
+    pil = pil.resize((out_w, out_h), resample=Image.LANCZOS)
     buf = io.BytesIO()
+    # RGBA mode automatically handles transparency via alpha channel
     pil.save(buf, format="PNG", optimize=True)
     return base64.b64encode(buf.getvalue()).decode("ascii")
 

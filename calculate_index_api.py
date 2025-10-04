@@ -278,12 +278,15 @@ def calculate_index(req: CalculateRequest):
         else:
             palette, labels = utils.PALETTE_MAP.get(index_name, (utils.PALETTE, utils.LABELS))
 
-        # Use nodata_transparent=False to show white for nodata/cloud, matching reference API
+        # Pass AOI geometry, transform, and CRS for proper masking
         img_b64 = utils.render_spread_png_fast(
             bins_full, NDVI_canvas, res_m,
             supersample, smooth, gaussian_sigma,
             width, height, palette=palette, labels=labels,
-            nodata_transparent=False
+            nodata_transparent=True,
+            aoi_ll_geojson=geom,
+            transform=dst_transform,
+            crs=target_crs
         )
 
         legend = []
