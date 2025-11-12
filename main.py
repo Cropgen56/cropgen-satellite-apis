@@ -12,7 +12,8 @@ origins = [
     "http://localhost:3000",
     "http://localhost:5173",
     "https://cropydeals.cropgenapp.com",
-    "https://app.cropgenapp.com"
+    "https://app.cropgenapp.com",
+    "https://soilsense.com"
 ]
 
 app.add_middleware(
